@@ -120,6 +120,9 @@ parse the configuration, so a broken image can never be published.
 
 ### Automated builds
 
+Every action in the workflow is pinned to a full commit SHA rather than a
+mutable tag, so nobody can repoint `@v7` at new code behind this repo's back.
+
 `.github/workflows/build.yml` builds and pushes to
 `ghcr.io/wickedyoda/wordpress-hardened` on every push to `main`, and on a
 **weekly schedule**. The schedule is what keeps this in line with upstream:
