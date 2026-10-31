@@ -21,9 +21,9 @@ on:
   workflow_dispatch:
     inputs:
       base_image:
-        description: "Base image to build FROM (e.g. wordpress:8.3-apache)"
+        description: "Base image to build FROM (e.g. wordpress:php8.3-apache)"
         required: false
-        default: "wordpress:8.3-apache"
+        default: "wordpress:php8.3-apache"
 
 env:
   REGISTRY: ghcr.io
@@ -58,10 +58,10 @@ jobs:
           context: .
           push: true
           build-args: |
-            BASE_IMAGE=${{ github.event.inputs.base_image || 'wordpress:8.3-apache' }}
+            BASE_IMAGE=${{ github.event.inputs.base_image || 'wordpress:php8.3-apache' }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:8.3-apache
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:php8.3-apache
           # OCI attestations: records what was built and from what.
           provenance: true
           sbom: true
@@ -75,7 +75,7 @@ jobs:
         continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:8.3-apache
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:php8.3-apache
           format: table
           exit-code: "0"
           ignore-unfixed: true

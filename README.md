@@ -3,7 +3,7 @@
 A thin, hardened derivative of the **official** WordPress Docker image.
 
 ```
-php:8.3-apache  ->  wordpress:8.3-apache  ->  ghcr.io/wickedyoda/wordpress-hardened
+php:php8.3-apache  ->  wordpress:php8.3-apache  ->  ghcr.io/wickedyoda/wordpress-hardened
 ```
 
 This repository does **not** fork or re-generate
@@ -107,12 +107,12 @@ Being honest about the boundaries matters more than the feature list.
 
 ```bash
 # Default base (PHP 8.3, matching the live container)
-docker build -t wordpress-hardened:8.3-apache .
+docker build -t wordpress-hardened:php8.3-apache .
 
 # Pin the base by digest for a byte-exact, reproducible rebuild
 docker build \
-  --build-arg BASE_IMAGE=wordpress:8.3-apache@sha256:<digest> \
-  -t wordpress-hardened:8.3-apache .
+  --build-arg BASE_IMAGE=wordpress:php8.3-apache@sha256:<digest> \
+  -t wordpress-hardened:php8.3-apache .
 ```
 
 The build **fails loudly** if any hardening file is missing or if Apache cannot
@@ -138,7 +138,7 @@ Replace the `image:` line in your WordPress service:
 ```yaml
   wordpress:
     # was: image: wordpress:latest
-    image: ghcr.io/wickedyoda/wordpress-hardened:8.3-apache
+    image: ghcr.io/wickedyoda/wordpress-hardened:php8.3-apache
     container_name: wickedyoda-wp
     restart: unless-stopped
 ```
@@ -153,7 +153,7 @@ mount becomes redundant and can be removed:
 
 **Pin the tag.** `wordpress:latest` is a floating tag; a recreate silently pulled
 a newer image and that is what rebuilt the container layer and reverted the
-hardening in the first place. Prefer `:8.3-apache`, ideally by digest.
+hardening in the first place. Prefer `:php8.3-apache`, ideally by digest.
 
 ---
 
@@ -194,6 +194,23 @@ mu-plugins/security_hardening.php
                                 -> /usr/src/wordpress/wp-content/mu-plugins/
 .github/workflows/build.yml     GHCR build + weekly upstream refresh
 ```
+
+---
+
+## A note on upstream tag names
+
+The official WordPress image tags the Apache variant as `php8.3-apache`, **not**
+`8.3-apache` — that approximation does not exist and fails the build with
+`not found`. Always confirm against the registry before changing `BASE_IMAGE`:
+
+```bash
+# HTTP 200 means the tag is real; 404 means it is not
+curl -s -o /dev/null -w '%{http_code}\n' \
+  https://hub.docker.com/v2/repositories/library/wordpress/tags/php8.3-apache
+```
+
+Valid variants for the tag this repo uses: `php8.3-apache`, `php8.3`, `php8.3-fpm`,
+`php8.3-fpm-alpine`, plus version-pinned forms such as `7.2-php8.3-apache`.
 
 ---
 
