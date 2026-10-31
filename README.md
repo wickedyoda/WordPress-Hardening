@@ -118,16 +118,51 @@ docker build \
 The build **fails loudly** if any hardening file is missing or if Apache cannot
 parse the configuration, so a broken image can never be published.
 
-### Automated builds
+### Automated pipeline — verify, build, then publish
 
-Every action in the workflow is pinned to a full commit SHA rather than a
-mutable tag, so nobody can repoint `@v7` at new code behind this repo's back.
+`.github/workflows/build.yml` runs three jobs, and **publishing is the last
+gate**: a failure anywhere upstream of `publish` means nothing is pushed.
 
-`.github/workflows/build.yml` builds and pushes to
-`ghcr.io/wickedyoda/wordpress-hardened` on every push to `main`, and on a
-**weekly schedule**. The schedule is what keeps this in line with upstream:
-WordPress and PHP security releases are picked up automatically, with no
-rebasing and no generated Dockerfiles to maintain.
+**Gate 1 — `verify`** (static analysis, nothing is built until this is green):
+
+| Check | Tool | Blocking |
+|---|---|---|
+| GitHub Actions workflow syntax and expressions | actionlint | **yes** |
+| Workflow security audit | zizmor | advisory |
+| YAML syntax | yamllint | **yes** |
+| Dockerfile best practice | hadolint | **yes** |
+| Committed secrets | gitleaks | **yes** |
+| Dockerfile misconfiguration | Trivy config | advisory |
+| PHP syntax of the mu-plugin | `php -l` | **yes** |
+| PHP hardening ini actually applies | `php -r` assertion | **yes** |
+| Apache hardening config parses | `apache2ctl -t` | **yes** |
+
+**Gate 2 — `build`** (prove the artifact, not just the source):
+
+- Builds the image and loads it locally — **nothing is pushed from this job**.
+- **Smoke test**: runs the image with **no volumes and no bind mounts**, then
+  asserts `readme.html`, `license.txt`, `wp-config-sample.php`, `.gitignore` and
+  `wp-content/php-error.log` all return 403, that `X-Powered-By` is absent, and
+  that `apache2ctl -t` passes. If the hardening were still living in compose,
+  this job would fail.
+- **Trivy image scan** — blocks on **CRITICAL with a fix available**.
+
+**`publish`** — runs only when both gates pass, and not on pull requests. Pushes
+to `ghcr.io/wickedyoda/wordpress-hardened` with OCI provenance and SBOM
+attestations.
+
+Triggers: every push to `main`, every pull request (verify + build only, never
+publish), a **weekly schedule** (Sundays 04:17 UTC) which is what keeps the image
+in line with upstream WordPress and PHP security releases, and manual dispatch.
+
+Every action is pinned to a full commit SHA rather than a mutable tag, so nobody
+can repoint `@v7` at new code behind this repo's back.
+
+**Why HIGH findings do not block.** The upstream Debian base currently carries
+36 HIGH advisories and **0 CRITICAL**. The CRITICAL gate therefore reflects
+findings you can act on, while HIGH is reported in full without blocking every
+build forever. Clearing those 36 is a separate, deliberate change — rebuild the
+base with `apt-get upgrade` — not something a linter should force.
 
 ---
 
