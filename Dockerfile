@@ -3,7 +3,7 @@
 # ===========================================================================
 # A THIN, hardened derivative of the official WordPress Docker image.
 #
-# Layer chain:   php:8.3-apache  ->  wordpress:8.3-apache  ->  THIS IMAGE
+# Layer chain:   php:php8.3-apache  ->  wordpress:php8.3-apache  ->  THIS IMAGE
 #
 # This does NOT fork or re-generate docker-library/wordpress. It only ADDS
 # configuration files on top of the official image, so staying in line with
@@ -23,8 +23,8 @@
 # ===========================================================================
 
 # Bump this to track upstream (or pin by digest for byte-exact rebuilds):
-#   docker build --build-arg BASE_IMAGE=wordpress:8.3-apache@sha256:... .
-ARG BASE_IMAGE=wordpress:8.3-apache
+#   docker build --build-arg BASE_IMAGE=wordpress:php8.3-apache@sha256:... .
+ARG BASE_IMAGE=wordpress:php8.3-apache
 FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.title="wordpress-hardened" \
