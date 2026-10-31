@@ -1,23 +1,22 @@
-name: Build hardened WordPress image
+name: Verify, build and publish
 
-# Three ways this runs:
-#   push      -> rebuild whenever the hardening files change
-#   schedule  -> WEEKLY rebuild straight from upstream, so WordPress and PHP
-#                security updates flow in without anyone touching this repo.
-#                THIS is what "staying in line with the official image" means
-#                in practice - no rebasing, no generated Dockerfiles.
-#   manual    -> Actions > Run workflow, optionally with a different base.
+# Pipeline shape:
+#   verify   -> static checks: workflows, YAML, Dockerfile, secrets, PHP, Apache
+#   build    -> build the image, SMOKE TEST it, scan it for CRITICALs
+#   publish  -> THE ONLY job that pushes to GHCR, and it runs only if both
+#               gates above passed. A failing scan therefore cannot publish.
 #
 # All actions are pinned to a full commit SHA. A mutable tag such as @v7 can be
-# repointed at new code by whoever controls the action, which is a supply-chain
-# risk this repo should not carry. The trailing comment records which release
-# each SHA is, so bumps stay reviewable.
+# repointed at new code by whoever controls the action; a SHA cannot. The
+# trailing comment records which release each SHA is, so bumps stay reviewable.
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   schedule:
-    - cron: "17 4 * * 0"        # Sundays 04:17 UTC
+    - cron: "17 4 * * 0"        # Sundays 04:17 UTC - weekly upstream refresh
   workflow_dispatch:
     inputs:
       base_image:
@@ -28,15 +27,183 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/wordpress-hardened
+  DEFAULT_BASE: wordpress:php8.3-apache
 
 jobs:
-  build:
-    # Pinned rather than ubuntu-latest: that label migrates to Ubuntu 26 in
-    # October 2026, and an image build should not change under you.
+  # ---------------------------------------------------------------------------
+  # GATE 1 - static analysis. Nothing is built until this is green.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Verify - lint and security scans
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      packages: write          # push to GHCR
+      pull-requests: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0        # gitleaks needs full history, not a shallow clone
+
+      - name: Lint GitHub Actions workflows
+        uses: reviewdog/action-actionlint@619a81ec64ff8c0211cd6146eb2b21e8f1d7f440 # v1.81.1
+
+      - name: Audit workflow security
+        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+        continue-on-error: true # advisory: some findings need upstream fixes
+
+      - name: Lint YAML
+        uses: ibiqlik/action-yamllint@2576378a8e339169678f9939646ee3ee325e845c # v3.1.1
+        with:
+          config_file: .yamllint.yaml
+          strict: true
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan config for misconfiguration
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true # advisory: DS002 (root user) is inherent to the upstream Apache image
+        with:
+          scan-type: config
+          scan-ref: .
+          format: table
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+
+      - name: Validate PHP syntax
+        run: |
+          docker run --rm -v "$PWD/mu-plugins:/m:ro" \
+            --entrypoint php ${{ env.DEFAULT_BASE }} -l /m/security_hardening.php
+
+      - name: Validate the PHP hardening ini actually applies
+        run: |
+          docker run --rm \
+            -v "$PWD/php-hardening.ini:/usr/local/etc/php/conf.d/zz-hardening.ini:ro" \
+            --entrypoint php ${{ env.DEFAULT_BASE }} -r '
+              $keys = ["expose_php", "display_errors",
+                       "display_startup_errors", "allow_url_include"];
+              $bad = [];
+              foreach ($keys as $k) {
+                $v = ini_get($k);
+                if ($v === "1" || strtolower($v) === "on") { $bad[] = "$k=$v"; }
+              }
+              if ($bad) {
+                fwrite(STDERR, "FAIL: not hardened -> " . implode(", ", $bad) . "\n");
+                exit(1);
+              }
+              echo "PHP ini hardening verified\n";
+            '
+
+      - name: Validate the Apache hardening config parses
+        run: |
+          out=$(docker run --rm \
+            -v "$PWD/apache-hardening.conf:/etc/apache2/conf-enabled/zz-hardening.conf:ro" \
+            --entrypoint apache2ctl ${{ env.DEFAULT_BASE }} -t 2>&1)
+          echo "$out"
+          echo "$out" | grep -q "Syntax OK"
+
+  # ---------------------------------------------------------------------------
+  # GATE 2 - build the artifact and PROVE it works. No publish until this passes.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build, smoke-test and scan
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image for testing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true               # keep it local; nothing is pushed from this job
+          push: false
+          tags: wordpress-hardened:test
+          build-args: |
+            BASE_IMAGE=${{ github.event.inputs.base_image || env.DEFAULT_BASE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # This is the assertion that matters. A bare `docker run` with NO volumes
+      # and NO bind mounts fails unless the hardening is intrinsic to the image -
+      # which is the entire point of this repository.
+      - name: Smoke test - hardening must hold with no volumes or mounts
+        run: |
+          set -uo pipefail
+          docker run -d --name wh-test -p 18085:80 wordpress-hardened:test
+          for i in $(seq 1 40); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18085/ || true)
+            [ -n "$code" ] && [ "$code" != "000" ] && break
+            sleep 1
+          done
+          echo "apache responded after ${i}s (root status ${code:-none})"
+          fail=0
+          for p in readme.html license.txt wp-config-sample.php .gitignore wp-content/php-error.log; do
+            c=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18085/$p")
+            if [ "$c" = "403" ]; then echo "PASS  $p -> 403"; else echo "FAIL  $p -> $c (expected 403)"; fail=1; fi
+          done
+          if curl -sI http://127.0.0.1:18085/ | grep -qi '^x-powered-by'; then
+            echo "FAIL  X-Powered-By is present"; fail=1
+          else
+            echo "PASS  X-Powered-By absent"
+          fi
+          srv=$(curl -sI http://127.0.0.1:18085/ | tr -d '\r' | grep -i '^server:' || true)
+          echo "INFO  $srv"
+          if docker exec wh-test apache2ctl -t >/dev/null 2>&1; then echo "PASS  apache2ctl -t"; else echo "FAIL  apache config invalid"; fail=1; fi
+          docker logs wh-test >/dev/null 2>&1
+          docker rm -f wh-test >/dev/null
+          exit $fail
+
+      - name: Scan image for CRITICAL vulnerabilities (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: wordpress-hardened:test
+          format: table
+          exit-code: "1"           # blocks the pipeline
+          ignore-unfixed: true     # only an actionable (fixable) CVE should block
+          severity: CRITICAL
+
+      - name: Scan image - full CRITICAL/HIGH report
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true
+        with:
+          image-ref: wordpress-hardened:test
+          format: table
+          exit-code: "0"           # advisory: these sit in the upstream Debian base
+          ignore-unfixed: false
+          severity: CRITICAL,HIGH
+
+  # ---------------------------------------------------------------------------
+  # PUBLISH - reached only when both gates above are green.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish to GitHub Packages
+    needs: [verify, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout
@@ -58,25 +225,11 @@ jobs:
           context: .
           push: true
           build-args: |
-            BASE_IMAGE=${{ github.event.inputs.base_image || 'wordpress:php8.3-apache' }}
+            BASE_IMAGE=${{ github.event.inputs.base_image || env.DEFAULT_BASE }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:php8.3-apache
-          # OCI attestations: records what was built and from what.
           provenance: true
           sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      # Report-only vulnerability scan. continue-on-error plus exit-code 0 means
-      # an unfixable upstream CVE -- or a broken scanner -- never blocks a
-      # deployment you actually need. Read the log; do not gate on it.
-      - name: Scan for vulnerabilities (report only)
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:php8.3-apache
-          format: table
-          exit-code: "0"
-          ignore-unfixed: true
-          severity: CRITICAL,HIGH

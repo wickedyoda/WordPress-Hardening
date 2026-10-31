@@ -1,0 +1,21 @@
+---
+# yamllint configuration.
+#
+# The default ruleset caps lines at 80 characters, which workflow files cannot
+# honour: SHA pins, action names, tag lists and URLs are all long by nature.
+# Everything else stays at the default so genuine YAML problems still fail.
+extends: default
+
+rules:
+  line-length:
+    max: 200
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+  # `on:` is a real GitHub Actions key; the truthy rule would read a bare `on`
+  # value as a boolean. Only flag genuinely ambiguous values.
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+  document-start: disable
+  comments:
+    min-spaces-from-content: 1
