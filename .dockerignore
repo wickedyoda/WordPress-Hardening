@@ -1,0 +1,6 @@
+.git
+.gitignore
+.github
+*.md
+!mu-plugins/*
+docker-compose*.yml
