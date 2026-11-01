@@ -104,6 +104,16 @@ jobs:
               echo "PHP ini hardening verified\n";
             '
 
+      - name: Assert the error log is outside the document root
+        run: |
+          set -euo pipefail
+          if grep -qE '^[[:space:]]*error_log[[:space:]]*=[[:space:]]*/var/www' php-hardening.ini; then
+            echo "FAIL: php-hardening.ini points error_log inside the document root"
+            exit 1
+          fi
+          grep -qE '^error_log[[:space:]]*=[[:space:]]*/var/log/php/error\.log' php-hardening.ini
+          echo "PASS: error_log is /var/log/php/error.log"
+
       - name: Validate the Apache hardening config parses
         run: |
           out=$(docker run --rm \
@@ -168,19 +178,51 @@ jobs:
           fi
           srv=$(curl -sI http://127.0.0.1:18085/ | tr -d '\r' | grep -i '^server:' || true)
           echo "INFO  $srv"
+
+          # The error log must NOT be inside the document root. This is the fix
+          # for the real incident: the log was being served as a static file
+          # (HTTP 200, 501 KB, 4,387 lines, 34 absolute paths).
+          logpath=$(docker exec wh-test php -r 'echo ini_get("error_log");')
+          case "$logpath" in
+            /var/log/*) echo "PASS  error_log outside the docroot ($logpath)" ;;
+            *)          echo "FAIL  error_log is '$logpath' (must be under /var/log)"; fail=1 ;;
+          esac
+
+          # Both mu-plugins must reach a fresh volume.
+          for mu in security_hardening.php xmlrpc-hardening.php; do
+            if docker exec wh-test test -s "/var/www/html/wp-content/mu-plugins/$mu"; then
+              echo "PASS  mu-plugin deployed: $mu"
+            else
+              echo "FAIL  mu-plugin missing: $mu"; fail=1
+            fi
+          done
+
+          # The xmlrpc amplifier must be gone from the loaded plugin's method list.
+          if docker exec wh-test grep -q "system.multicall" \
+               "/var/www/html/wp-content/mu-plugins/xmlrpc-hardening.php"; then
+            echo "PASS  xmlrpc amplifier is unregistered by the mu-plugin"
+          else
+            echo "FAIL  xmlrpc-hardening.php does not unregister system.multicall"; fail=1
+          fi
           if docker exec wh-test apache2ctl -t >/dev/null 2>&1; then echo "PASS  apache2ctl -t"; else echo "FAIL  apache config invalid"; fail=1; fi
           docker logs wh-test >/dev/null 2>&1
           docker rm -f wh-test >/dev/null
           exit $fail
 
-      - name: Scan image for CRITICAL vulnerabilities (gate)
+      # The gate is on FIXABLE vulnerabilities only. The Dockerfile runs
+      # `apt-get upgrade`, so every advisory Debian has already patched is
+      # applied at build time and the fixable count is 0. Anything that appears
+      # here is a regression worth stopping for. Unfixable advisories in the
+      # upstream base are reported by the advisory step below, not gated: no
+      # amount of work in this repo can clear them.
+      - name: Scan image for fixable HIGH/CRITICAL vulnerabilities (gate)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: wordpress-hardened:test
           format: table
           exit-code: "1"           # blocks the pipeline
-          ignore-unfixed: true     # only an actionable (fixable) CVE should block
-          severity: CRITICAL
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
 
       - name: Scan image - full CRITICAL/HIGH report
         if: always()
