@@ -237,6 +237,38 @@ docker exec <container> rm -f /var/www/html/i.php
 
 ---
 
+## A subtle trap: `xmlrpc_methods` cannot remove `system.multicall`
+
+The first version of `xmlrpc-hardening.php` filtered `xmlrpc_methods`. **It did
+not work, and the reason is worth knowing.**
+
+`wp_xmlrpc_server` passes its filtered method array to `IXR_Server`, but
+`IXR_Server::__construct()` calls `setCallbacks()` *after* storing it, and
+`setCallbacks()` unconditionally re-registers three methods:
+
+```php
+$this->callbacks['system.getCapabilities'] = 'this:getCapabilities';
+$this->callbacks['system.listMethods']     = 'this:listMethods';
+$this->callbacks['system.multicall']       = 'this:multiCall';
+```
+
+So any filter on `xmlrpc_methods` is **silently defeated** for those three.
+Verified live: with v1 deployed, a well-formed `system.multicall` still returned
+a normal result. WordPress also exposes no action before dispatch that carries the
+decoded method name — `xmlrpc_call` fires *inside* individual methods, which on a
+multicall is already too late.
+
+v2 therefore refuses the request on the **raw body**, before `IXR_Server` is
+constructed, and normalises that body first (numeric character references
+decoded, whitespace stripped) so `<methodName>system.multi&#99;all</methodName>`
+cannot slip past a naive string match. Both the plain and the obfuscated form are
+verified refused; legitimate single calls still work.
+
+`pingback.*` **is** removable by the filter, because WordPress registers those
+itself and `IXR_Server` does not re-add them.
+
+---
+
 ## Layout
 
 ```
