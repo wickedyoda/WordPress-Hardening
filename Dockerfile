@@ -97,5 +97,13 @@ RUN set -eux; \
     fi; \
     apache2ctl -t
 
-# ENTRYPOINT ["docker-entrypoint.sh"] and CMD ["apache2-foreground"] are
-# inherited from the base image unchanged.
+# --- Make the mu-plugins reach an EXISTING volume too ----------------------
+# The base entrypoint only populates /var/www/html when the volume is empty, so
+# without this wrapper a mu-plugin shipped here would never reach a running
+# site. The wrapper reconciles them then hands over to the stock entrypoint
+# unchanged. CI's smoke test runs this very path from a clean volume.
+COPY --chown=root:root entrypoint-hardening.sh /usr/local/bin/entrypoint-hardening.sh
+RUN chmod 0755 /usr/local/bin/entrypoint-hardening.sh
+
+ENTRYPOINT ["entrypoint-hardening.sh"]
+CMD ["apache2-foreground"]

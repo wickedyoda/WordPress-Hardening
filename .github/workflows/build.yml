@@ -205,6 +205,24 @@ jobs:
             echo "FAIL  xmlrpc-hardening.php does not unregister system.multicall"; fail=1
           fi
           if docker exec wh-test apache2ctl -t >/dev/null 2>&1; then echo "PASS  apache2ctl -t"; else echo "FAIL  apache config invalid"; fail=1; fi
+          # Regression guard for entrypoint-hardening.sh. The image ships
+          # mu-plugins in /usr/src/wordpress, which the stock entrypoint copies
+          # ONLY into an empty volume - so a fix shipped in the image could reach
+          # a brand-new install but never an existing site. Reproduce the real
+          # case: a POPULATED volume that is missing one of them.
+          docker volume create ci-pretend >/dev/null
+          docker run --rm -v ci-pretend:/v --entrypoint sh wordpress-hardened:test \
+            -c 'cp -a /usr/src/wordpress/. /v/ && rm -f /v/wp-content/mu-plugins/xmlrpc-hardening.php'
+          docker run -d --name ci-existing -v ci-pretend:/var/www/html wordpress-hardened:test
+          sleep 6
+          if docker exec ci-existing test -s /var/www/html/wp-content/mu-plugins/xmlrpc-hardening.php; then
+            echo "PASS  mu-plugin reconciled into a POPULATED volume"
+          else
+            echo "FAIL  mu-plugin not reconciled into a populated volume"; fail=1
+          fi
+          docker rm -f ci-existing >/dev/null
+          docker volume rm ci-pretend >/dev/null
+
           docker logs wh-test >/dev/null 2>&1
           docker rm -f wh-test >/dev/null
           exit $fail
