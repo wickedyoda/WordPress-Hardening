@@ -197,12 +197,21 @@ jobs:
             fi
           done
 
-          # The xmlrpc amplifier must be gone from the loaded plugin's method list.
-          if docker exec wh-test grep -q "system.multicall" \
-               "/var/www/html/wp-content/mu-plugins/xmlrpc-hardening.php"; then
-            echo "PASS  xmlrpc amplifier is unregistered by the mu-plugin"
+          # The xmlrpc guard must be the PRE-DISPATCH one on the raw body. A
+          # plain xmlrpc_methods filter is silently defeated: IXR_Server's
+          # setCallbacks() re-registers system.multicall after WordPress's
+          # filtered list is stored, which was proven live before v2.
+          mu=/var/www/html/wp-content/mu-plugins/xmlrpc-hardening.php
+          if docker exec wh-test grep -q "XMLRPC_REQUEST" "$mu" \
+             && docker exec wh-test grep -q "stripos" "$mu"; then
+            echo "PASS  xmlrpc guard runs pre-dispatch on the normalised body"
           else
-            echo "FAIL  xmlrpc-hardening.php does not unregister system.multicall"; fail=1
+            echo "FAIL  xmlrpc guard is missing or is only a method filter"; fail=1
+          fi
+          if docker exec wh-test grep -q "preg_replace_callback" "$mu"; then
+            echo "PASS  xmlrpc guard decodes character references (anti-obfuscation)"
+          else
+            echo "FAIL  xmlrpc guard does not normalise character references"; fail=1
           fi
           if docker exec wh-test apache2ctl -t >/dev/null 2>&1; then echo "PASS  apache2ctl -t"; else echo "FAIL  apache config invalid"; fail=1; fi
           # Regression guard for entrypoint-hardening.sh. The image ships
