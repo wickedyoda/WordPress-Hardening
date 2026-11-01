@@ -84,13 +84,19 @@ other `.log` or backup file is not exposed either.
 
 Being honest about the boundaries matters more than the feature list.
 
-- **It cannot bake anything into `/var/www/html`.** That path is declared
-  `VOLUME` by the base image, so it is data, not image content. The mu-plugin is
-  copied to `/usr/src/wordpress/wp-content/mu-plugins/` instead — which the base
-  entrypoint copies into the volume **only when the volume is empty**. On an
-  existing site the image's copy is inert. That is intentional, not a gap:
-  it means a brand-new install is hardened from first boot, while a live site
-  is never overwritten.
+- **Site files live in a volume, so the image reconciles them at startup.**
+  `/var/www/html` is declared `VOLUME` by the base image, so site files can never
+  live in an image layer. The mu-plugins are therefore shipped to
+  `/usr/src/wordpress/wp-content/mu-plugins/` (which the stock entrypoint copies
+  into a **fresh** volume) **and** reconciled into the volume on every start by
+  `entrypoint-hardening.sh`, which runs before the stock entrypoint and then
+  `exec`s it unchanged.
+
+  Without that wrapper a mu-plugin shipped in the image would reach a brand-new
+  install but **never an existing site** — the fix would be published and silently
+  not apply. The wrapper is idempotent, only ever touches files the image owns,
+  and updates them when the image's copy differs. CI reproduces the real case: a
+  populated volume missing one mu-plugin must gain it on start.
 - **It does not disable XML-RPC.** That block ships commented out, because it can
   break Jetpack and the WordPress mobile app. See the bottom of
   `apache-hardening.conf`.
@@ -237,8 +243,10 @@ docker exec <container> rm -f /var/www/html/i.php
 Dockerfile                      thin FROM wordpress:<ver>-apache + COPYs
 apache-hardening.conf           -> /etc/apache2/conf-enabled/zz-hardening.conf
 php-hardening.ini               -> /usr/local/etc/php/conf.d/zz-hardening.ini
-mu-plugins/security_hardening.php
-                                -> /usr/src/wordpress/wp-content/mu-plugins/
+mu-plugins/security_hardening.php        -> /usr/src/wordpress/wp-content/mu-plugins/
+mu-plugins/xmlrpc-hardening.php          -> /usr/src/wordpress/wp-content/mu-plugins/
+entrypoint-hardening.sh          -> /usr/local/bin/, runs before the stock entrypoint
+                                    and reconciles mu-plugins into the volume
 .github/workflows/build.yml     GHCR build + weekly upstream refresh
 ```
 
