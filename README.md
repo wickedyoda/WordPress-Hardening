@@ -145,7 +145,11 @@ gate**: a failure anywhere upstream of `publish` means nothing is pushed.
   `wp-content/php-error.log` all return 403, that `X-Powered-By` is absent, and
   that `apache2ctl -t` passes. If the hardening were still living in compose,
   this job would fail.
-- **Trivy image scan** — blocks on **CRITICAL with a fix available**.
+- **Trivy image scan** — blocks on **fixable HIGH or CRITICAL**. The Dockerfile
+  runs `apt-get upgrade`, so every advisory Debian has already patched is applied
+  at build time and the fixable count is **0**; anything that appears is a
+  regression worth stopping for. Unfixable advisories in the upstream base are
+  reported but not gated — no work in this repo can clear them.
 
 **`publish`** — runs only when both gates pass, and not on pull requests. Pushes
 to `ghcr.io/wickedyoda/wordpress-hardened` with OCI provenance and SBOM
@@ -158,11 +162,19 @@ in line with upstream WordPress and PHP security releases, and manual dispatch.
 Every action is pinned to a full commit SHA rather than a mutable tag, so nobody
 can repoint `@v7` at new code behind this repo's back.
 
-**Why HIGH findings do not block.** The upstream Debian base currently carries
-36 HIGH advisories and **0 CRITICAL**. The CRITICAL gate therefore reflects
-findings you can act on, while HIGH is reported in full without blocking every
-build forever. Clearing those 36 is a separate, deliberate change — rebuild the
-base with `apt-get upgrade` — not something a linter should force.
+**Why the gate is "fixable" rather than a raw count.** Measured on 2026-10-31:
+
+| | before `apt-get upgrade` | after |
+|---|---|---|
+| Fixable HIGH | 36 | **0** |
+| Fixable CRITICAL | 0 | **0** |
+| Total HIGH (incl. unfixable) | 167 | 131 |
+| Total CRITICAL (incl. unfixable) | 2 | 2 |
+
+The upgrade moved ImageMagick `deb13u12 -> deb13u13` and cleared every advisory
+Debian had already patched. What remains is **unfixable** — no fix has been
+published — so gating on it would block every build forever without changing a
+single byte. The gate therefore fires only on what can actually be acted on.
 
 ---
 
